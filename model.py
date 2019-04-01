@@ -28,12 +28,13 @@ class ConvBlock(nn.Module):
         super().__init__()
         self.block1 = DilatedConvBlock(in_size, out_size, dropout_rate=0)
         self.block2 = DilatedConvBlock(out_size, out_size, dropout_rate=dropout_rate, dilation=dilation)
-        self.pool = nn.MaxPool2d(kernel_size=2)
+        self.pool = nn.MaxPool2d(kernel_size=2, return_indices=True)
 
     def forward(self, x):
         x = self.block1(x)
         x = self.block2(x)
-        return self.pool(x), x
+        out, indices = self.pool(x)
+        return out, x, indices
 
 class ConvUpBlock(nn.Module):
     def __init__(self, in_size, out_size, dropout_rate=0.2, dilation=1):
@@ -648,13 +649,268 @@ class DCAN(nn.Module):
         outc = F.sigmoid(u1c + u2c + u3c)
         return outs, outc
 
+class DA_Unet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # source down conv
+        self.c1s = ConvBlock(3, 16)
+        self.c2s = ConvBlock(16, 32)
+        self.c3s = ConvBlock(32, 64)
+        self.c4s = ConvBlock(64, 128)
+        # target down conv
+        self.c1t = ConvBlock(3, 16)
+        self.c2t = ConvBlock(16, 32)
+        self.c3t = ConvBlock(32, 64)
+        self.c4t = ConvBlock(64, 128)
+        # bottom conv tunnel
+        self.cu = ConvBlock(128, 256)
+        # up conv
+        self.u5 = ConvUpBlock(256, 128)
+        self.u6 = ConvUpBlock(128, 64)
+        self.u7 = ConvUpBlock(64, 32)
+        self.u8 = ConvUpBlock(32, 16)
+        # final conv tunnel
+        self.ce = nn.Conv2d(16, 1, 1)
+
+    def forward_train(self, s, t):
+        #source
+        s, c1s, _ = self.c1s(s)
+        s, c2s, _ = self.c2s(s)
+        s, c3s, _ = self.c3s(s)
+        s, c4s, _ = self.c4s(s)
+        _, s, _ = self.cu(s) # no maxpool for U bottom
+        s = self.u5(s, c4s)
+        s = self.u6(s, c3s)
+        s = self.u7(s, c2s)
+        s_f = self.u8(s, c1s)
+        s = self.ce(s_f)
+        s = F.sigmoid(s)
+        #target
+        t, c1t, _ = self.c1t(t)
+        t, c2t, _ = self.c2t(t)
+        t, c3t, _ = self.c3t(t)
+        t, c4t, _ = self.c4t(t)
+        _, t, _ = self.cu(t) # no maxpool for U bottom
+        t = self.u5(t, c4t)
+        t = self.u6(t, c3t)
+        t = self.u7(t, c2t)
+        t_f = self.u8(t, c1t)
+        t = self.ce(t_f)
+        t = F.sigmoid(t)
+        return s, t, s_f, t_f
+
+    def forward_test(self, t):
+        #target
+        t, c1t, _ = self.c1t(t)
+        t, c2t, _ = self.c2t(t)
+        t, c3t, _ = self.c3t(t)
+        t, c4t, _ = self.c4t(t)
+        _, t, _ = self.cu(t) # no maxpool for U bottom
+        t = self.u5(t, c4t)
+        t = self.u6(t, c3t)
+        t = self.u7(t, c2t)
+        t = self.u8(t, c1t)
+        t = self.ce(t)
+        t = F.sigmoid(t)
+        return t
+
+    def forward(self, data, mode):
+        if mode == 'train':
+            return self.forward_train(data[0], data[1])
+        else:
+            return self.forward_test(data)
+
+class Ynet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # down conv
+        self.c1 = ConvBlock(3, 16)
+        self.c2 = ConvBlock(16, 32)
+        self.c3 = ConvBlock(32, 64)
+        self.c4 = ConvBlock(64, 128)
+        # bottom conv tunnel
+        self.cu = ConvBlock(128, 256)
+        # up conv
+        self.u5 = ConvUpBlock(256, 128)
+        self.u6 = ConvUpBlock(128, 64)
+        self.u7 = ConvUpBlock(64, 32)
+        self.u8 = ConvUpBlock(32, 16)
+        # final conv tunnel
+        self.ce = nn.Conv2d(16, 1, 1)
+        # autoencoder up conv
+        self.u5d = nn.ConvTranspose2d(256, 128, 3, padding=1)
+        self.up5 = nn.MaxUnpool2d(2, stride=2)
+        self.u6d = nn.ConvTranspose2d(128, 64, 3, padding=1)
+        self.up6 = nn.MaxUnpool2d(2, stride=2)
+        self.u7d = nn.ConvTranspose2d(64, 32, 3, padding=1)
+        self.up7 = nn.MaxUnpool2d(2, stride=2)
+        self.u8d = nn.ConvTranspose2d(32, 16, 3, padding=1)
+        self.up8 = nn.MaxUnpool2d(2, stride=2)
+        #self.up9 = nn.MaxUnpool2d(2, stride=1)
+        # final output
+        self.cea = nn.ConvTranspose2d(16, 3, 3, padding=1)
+
+    def forward_train_step1(self, s, t):
+        # source unet forward
+        s, c1s, _ = self.c1(s)
+        s, c2s, _ = self.c2(s)
+        s, c3s, _ = self.c3(s)
+        s, c4s, _ = self.c4(s)
+        _, s, _ = self.cu(s) # no maxpool for U bottom
+        s_u1 = self.u5(s, c4s)
+        s_u2 = self.u6(s_u1, c3s)
+        s_u3 = self.u7(s_u2, c2s)
+        s_u4 = self.u8(s_u3, c1s)
+        s_u = self.ce(s_u4)
+        s_u = F.sigmoid(s_u)
+        # target unet forward
+        t, c1t, _ = self.c1(t)
+        t, c2t, _ = self.c2(t)
+        t, c3t, _ = self.c3(t)
+        t, c4t, _ = self.c4(t)
+        _, t, _ = self.cu(t) # no maxpool for U bottom
+        t_u1 = self.u5(t, c4t)
+        t_u2 = self.u6(t_u1, c3t)
+        t_u3 = self.u7(t_u2, c2t)
+        t_u4 = self.u8(t_u3, c1t)
+        t_u = self.ce(t_u4)
+        t_u = F.sigmoid(t_u)
+        return s_u, [c1s, c2s, c3s, c4s, s, s_u1, s_u2, s_u3, s_u4], [c1t, c2t, c3t, c4t, t, t_u1, t_u2, t_u3, t_u4]
+
+    def forward_train_step2(self, s, t):
+        # source unet forward
+        s, c1s, inds1 = self.c1(s)
+        s, c2s, inds2 = self.c2(s)
+        s, c3s, inds3 = self.c3(s)
+        s, c4s, inds4 = self.c4(s)
+        _, s, _ = self.cu(s) # no maxpool for U bottom
+        s_u = self.u5(s, c4s)
+        s_u = self.u6(s_u, c3s)
+        s_u = self.u7(s_u, c2s)
+        s_u = self.u8(s_u, c1s)
+        s_u = self.ce(s_u)
+        s_u = F.sigmoid(s_u)
+        # source reconstruct image
+        s_d = self.u5d(s)
+        s_d = self.up5(s_d, inds4)
+        s_d = self.u6d(s_d)
+        s_d = self.up6(s_d, inds3)
+        s_d = self.u7d(s_d)
+        s_d = self.up7(s_d, inds2)
+        s_d = self.u8d(s_d)
+        s_d = self.up8(s_d, inds1)
+        #s_d = self.up9(s_d)
+        s_d = self.cea(s_d)
+        s_d = F.sigmoid(s_d)
+
+        # target forward
+        t, c1t, indt1 = self.c1(t)
+        t, c2t, indt2 = self.c2(t)
+        t, c3t, indt3 = self.c3(t)
+        t, c4t, indt4 = self.c4(t)
+        _, t, _ = self.cu(t) # no maxpool for U bottom
+        # target reconstruct image
+        t_d = self.u5d(t)
+        t_d = self.up5(t_d, indt4)
+        t_d = self.u6d(t_d)
+        t_d = self.up6(t_d, indt3)
+        t_d = self.u7d(t_d)
+        t_d = self.up7(t_d, indt2)
+        t_d = self.u8d(t_d)
+        t_d = self.up8(t_d, indt1)
+        #t_d = self.up9(t_d)
+        t_d = self.cea(t_d)
+        t_d = F.sigmoid(t_d)
+        return s_u, s_d, t_d
+        
+    def forward_train_combine(self, s, t):
+        # source unet forward
+        s, c1s, inds1 = self.c1(s)
+        s, c2s, inds2 = self.c2(s)
+        s, c3s, inds3 = self.c3(s)
+        s, c4s, inds4 = self.c4(s)
+        _, s, _ = self.cu(s) # no maxpool for U bottom
+        s_u1 = self.u5(s, c4s)
+        s_u2 = self.u6(s_u1, c3s)
+        s_u3 = self.u7(s_u2, c2s)
+        s_u4 = self.u8(s_u3, c1s)
+        s_u = self.ce(s_u4)
+        s_u = F.sigmoid(s_u)
+
+        # source reconstruct image
+        s_d = self.u5d(s)
+        s_d = self.up5(s_d, inds4)
+        s_d = self.u6d(s_d)
+        s_d = self.up6(s_d, inds3)
+        s_d = self.u7d(s_d)
+        s_d = self.up7(s_d, inds2)
+        s_d = self.u8d(s_d)
+        s_d = self.up8(s_d, inds1)
+        #s_d = self.up9(s_d)
+        s_d = self.cea(s_d)
+        s_d = F.sigmoid(s_d)
+
+        # target unet forward
+        t, c1t, indt1 = self.c1(t)
+        t, c2t, indt2 = self.c2(t)
+        t, c3t, indt3 = self.c3(t)
+        t, c4t, indt4 = self.c4(t)
+        _, t, _ = self.cu(t) # no maxpool for U bottom
+        t_u1 = self.u5(t, c4t)
+        t_u2 = self.u6(t_u1, c3t)
+        t_u3 = self.u7(t_u2, c2t)
+        t_u4 = self.u8(t_u3, c1t)
+        t_u = self.ce(t_u4)
+        t_u = F.sigmoid(t_u)
+
+        # target reconstruct image
+        t_d = self.u5d(t)
+        t_d = self.up5(t_d, indt4)
+        t_d = self.u6d(t_d)
+        t_d = self.up6(t_d, indt3)
+        t_d = self.u7d(t_d)
+        t_d = self.up7(t_d, indt2)
+        t_d = self.u8d(t_d)
+        t_d = self.up8(t_d, indt1)
+        #t_d = self.up9(t_d)
+        t_d = self.cea(t_d)
+        t_d = F.sigmoid(t_d)
+        return s_u, s_d, t_d, [c1s, c2s, c3s, c4s, s, s_u1, s_u2, s_u3, s_u4], [c1t, c2t, c3t, c4t, t, t_u1, t_u2, t_u3, t_u4]
+
+    def forward_test(self, x):
+        x, c1, _ = self.c1(x)
+        x, c2, _ = self.c2(x)
+        x, c3, _ = self.c3(x)
+        x, c4, _ = self.c4(x)
+        _, x, _ = self.cu(x) # no maxpool for U bottom
+        x = self.u5(x, c4)
+        x = self.u6(x, c3)
+        x = self.u7(x, c2)
+        x = self.u8(x, c1)
+        x = self.ce(x)
+        x = F.sigmoid(x)
+        return x
+
+    def forward(self, data, mode):
+        if mode == 'pretrain':
+            return self.forward_train_step1(data[0],data[1])
+        elif mode == 'train':
+            return self.forward_train_step2(data[0],data[1])
+        elif mode == 'combine':
+            return self.forward_train_combine(data[0],data[1])
+        elif mode == 'test' or mode == 'valid':
+            return self.forward_test(data)
+        else:
+            raise NotImplementedError()
+            return None
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def build_model(model_name='unet'):
     # initialize model
     if model_name == 'unet':
-        model = UNet()
+        model = UNet()  # line57
     elif model_name == 'dcan':
         model = DCAN(3, 1)
     elif model_name == 'caunet':
@@ -677,6 +933,10 @@ def build_model(model_name='unet'):
         model = Res_CamUNet(34, fixed_feature=True)
     elif model_name == 'res_samunet':
         model = Res_SamUNet(34, fixed_feature=True)
+    elif model_name == 'da_unet':
+        model = DA_Unet()
+    elif model_name == 'ynet':
+        model = Ynet()
     else:
         raise NotImplementedError()
     return model
