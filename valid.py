@@ -23,7 +23,7 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False):
     models = []
     for fn in ckpt or [None]:
         # load model
-        model = load_ckpt(filepath=fn)
+        model = load_ckpt(filepath=fn)  # helper.py line230
         if not model:
             print("Aborted: checkpoint {} not found!".format(fn))
             return
@@ -41,17 +41,17 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False):
         models.append(model)
 
     resize = not config['valid'].getboolean('pred_orig_size')
-    compose = Compose(augment=False, resize=resize)
+    compose = Compose(augment=False, resize=resize)  # dataset.py line125
     # decide which dataset to pick sample
     data_dir = os.path.join('data', target)
-    if target == 'test':
-        dataset = KaggleDataset(data_dir, transform=compose)
+    if target == 'test' or target == 'stage2':
+        dataset = KaggleDataset(data_dir, 'csv_file_t', transform=compose)
     elif os.path.exists('data/valid'):
         # advance mode: use valid folder as CV
-        dataset = KaggleDataset(data_dir, transform=compose)
+        dataset = KaggleDataset(data_dir, 'csv_file_t', transform=compose)
     else:
         # auto mode: split part of train dataset as CV
-        dataset = KaggleDataset('data/train', transform=compose, use_filter=True)
+        dataset = KaggleDataset('data/train', 'csv_file_t', transform=compose, use_filter=True)
         if target == 'train':
             dataset, _ = dataset.split()
         elif target == 'valid':
@@ -60,7 +60,7 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False):
     # iterate dataset and inference each sample
     ious = []
     writer = csvfile = None
-    for data in tqdm(dataset):
+    for data in tqdm(dataset):  # https://tqdm.github.io/docs/tqdm/
         with torch.no_grad():
             uid, y, y_c, y_m = inference(data, models, resize)
             x, gt, gt_s, gt_c, gt_m = unpack_data(data, compose, resize)
@@ -73,7 +73,7 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False):
             for rle in prob_to_rles(y, y_c, y_m):
                 writer.writerow([uid, ' '.join([str(i) for i in rle])])
         elif toiou:
-            assert target != 'test'
+            #assert target != 'test'
             if writer is None:
                 csvfile = open('iou.csv', 'w')
                 writer = csv.writer(csvfile)
@@ -104,7 +104,7 @@ def unpack_data(data, compose, resize):
     gt_m = data['label_m']
     gt = data['label_gt']
     # convert input to numpy array
-    x = compose.denorm(x)
+    x = compose.denorm(x)  # dataset.py line280
     s = size if resize else None
     x = compose.to_numpy(x, s)
     gt = compose.to_numpy(gt, s)
@@ -120,6 +120,11 @@ def inference(data, models, resize):
     tta = config['valid'].getboolean('test_time_augment')
     ensemble_policy = config['valid']['ensemble']
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_name = config['param']['model']
+    if model_name == 'da_unet' or model_name == 'ynet':
+        domain_adaptation = True
+    else:
+        domain_adaptation = False
 
     # sub-rountine to convert output tensor to numpy
     def convert(t):
@@ -170,7 +175,10 @@ def inference(data, models, resize):
             if not resize:
                 x = pad_tensor(x, size)
             # inference model
-            s = model(x)
+            if domain_adaptation:
+                s = model(x, 'valid')
+            else:
+                s = model(x)
             # handle multi-head
             c = m = torch.FloatTensor().to(device)
             if with_contour and with_marker:
@@ -305,7 +313,7 @@ def show(uid, x, y, y_c, y_m, save=False):
     y_bw = y > threshold
 
     if view_color_equalize:
-        x = clahe(x)
+        x = clahe(x)  # helper.py line376
     ax1[0].set_title('Image')
     ax1[0].imshow(x, aspect='auto')
     markers = np.zeros_like(x)
@@ -459,7 +467,7 @@ def get_iou(y, y_c, y_m, gt):
     only_contour = config['contour'].getboolean('exclusive')
 
     if segmentation:
-        y, markers = partition_instances(y, y_m, y_c)
+        y, markers = partition_instances(y, y_m, y_c)  # helper.py line313
     if remove_objects:
         y = remove_small_objects(y, min_size=min_object_size)
     if remove_fiber:
@@ -480,7 +488,7 @@ if __name__ == '__main__':
     parser.add_argument('--mask', action='store_true', help='Save prediction as PNG files per nuclei')
     parser.add_argument('--iou', action='store_true', help='Generate IoU CSV report')
     parser.add_argument('ckpt', nargs='*', help='filepath of checkpoint(s), otherwise lookup checkpoint/current.json')
-    parser.set_defaults(csv=False, save=False, mask=False, dataset='test', iou=False)
+    parser.set_defaults(csv=False, save=False, mask=False, dataset='test', iou=True)
     args = parser.parse_args()
 
     if not args.csv and not args.iou:
