@@ -28,7 +28,7 @@ from helper import config, clahe, filter_by_group
 class KaggleDataset(Dataset):
     """Kaggle dataset."""
 
-    def __init__(self, root, transform=None, cache=None, use_filter=False):
+    def __init__(self, root, data_file, transform=None, cache=None, use_filter=False):
         """
         Args:
             root_dir (string): Directory of data (train or test).
@@ -37,7 +37,7 @@ class KaggleDataset(Dataset):
         self.root = root
         self.transform = transform
         self.cache = cache
-        self.df = filter_by_group(root, use_filter)
+        self.df = filter_by_group(root, use_filter, data_file) # helper.py line389
 
     def __len__(self):
         return len(self.df)
@@ -102,7 +102,7 @@ class KaggleDataset(Dataset):
     def split(self):
         ''' return CV split dataset object '''
         from copy import copy
-        from sklearn.model_selection import train_test_split
+        from sklearn.model_selection import train_test_split  # https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.train_test_split.html#sklearn.model_selection.train_test_split
         train, valid = train_test_split(
             self.df,
             test_size=config['dataset'].getfloat('cv_ratio'), 

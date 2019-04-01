@@ -229,7 +229,7 @@ def save_ckpt(model, optimizer, epoch, iou_tr, iou_cv):
 
 def load_ckpt(model=None, optimizer=None, filepath=None):
     if filepath is None:
-        filepath = ckpt_path()
+        filepath = ckpt_path()  # line154
     if not os.path.isfile(filepath):
         return 0
     print("Loading checkpoint '{}'".format(filepath))
@@ -298,7 +298,7 @@ def add_missed_blobs(full_mask, labeled_mask, edges):
     return final_labels
 
 def drop_small_blobs(mask, min_size):
-    mask = remove_small_objects(mask, min_size=min_size)
+    mask = remove_small_objects(mask, min_size=min_size)  # http://scikit-image.org/docs/stable/api/skimage.morphology.html#skimage.morphology.remove_small_objects
     return mask
 
 def filter_fiber(blobs):
@@ -321,7 +321,7 @@ def partition_instances(raw_bodies, raw_markers=None, raw_edges=None):
     # https://github.com/scikit-image/scikit-image/issues/1875
     # Workaround by eliminating 1-pixel semantic mask first.
     bodies = raw_bodies > threshold
-    bodies = drop_small_blobs(bodies, 2) # bodies must be larger than 1-pixel
+    bodies = drop_small_blobs(bodies, 2) # bodies must be larger than 1-pixel  line300
     markers = None if raw_markers is None else (raw_markers > threshold_marker)
     edges = None if raw_edges is None else (raw_edges > threshold_edge)
 
@@ -358,8 +358,8 @@ def partition_instances(raw_bodies, raw_markers=None, raw_edges=None):
                                     indices=False, labels=bodies)
         markers = label(local_maxi)
 
-    if policy == 'ws':
-        seg_labels = watershed(-ndi.distance_transform_edt(bodies), markers, mask=bodies)
+    if policy == 'ws':  # Q: not understand
+        seg_labels = watershed(-ndi.distance_transform_edt(bodies), markers, mask=bodies)  # http://scikit-image.org/docs/stable/api/skimage.morphology.html#skimage.morphology.watershed
     elif policy == 'rw':
         markers[bodies == 0] = -1
         if np.sum(markers > 0) > 0:
@@ -370,7 +370,7 @@ def partition_instances(raw_bodies, raw_markers=None, raw_edges=None):
         markers[markers <= 0] = 0
     else:
         raise NotImplementedError("Policy not implemented")
-    final_labels = add_missed_blobs(bodies, seg_labels, edges)
+    final_labels = add_missed_blobs(bodies, seg_labels, edges)  # line280
     return final_labels, markers
 
 def clahe(x):
@@ -380,22 +380,22 @@ def clahe(x):
     is_pil = isinstance(x, Image.Image)
     if is_pil:
         x = np.asarray(x, dtype=np.uint8)
-    x = equalize_adapthist(x)
-    x = img_as_ubyte(x)
+    x = equalize_adapthist(x)  # http://scikit-image.org/docs/stable/api/skimage.exposure.html#skimage.exposure.equalize_adapthist
+    x = img_as_ubyte(x)  # http://scikit-image.org/docs/stable/api/skimage.html#img-as-ubyte
     if is_pil:
         x = Image.fromarray(x)
     return x
 
-def filter_by_group(root, use_filter):
+def filter_by_group(root, use_filter, data_file):
     c = config['dataset']
-    csv = c.get('csv_file')
-    files = next(os.walk(root))[1]
+    csv = c.get(data_file)
+    files = next(os.walk(root))[1]  # Q: next?
     files.sort()
     # if no csv file, return real file list
     if not os.path.isfile(csv) or not use_filter:
-        return pd.DataFrame({'image_id': files, 'group': 0})
+        return pd.DataFrame({'image_id': files, 'group': 0})  # https://pandas.pydata.org/pandas-docs/stable/reference/frame.html
     # read csv and do sanity check with existing files
-    df = pd.read_csv(csv)
+    df = pd.read_csv(csv)  # https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.read_csv.html
     assert len(df) > 0
     files = next(os.walk(root))[1]
     df = df.loc[ df['image_id'].isin(files) ]
