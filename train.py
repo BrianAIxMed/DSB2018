@@ -10,12 +10,13 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import RandomSampler, WeightedRandomSampler
 from tensorboardX import SummaryWriter
+from tqdm import tqdm
 # own code
 from model import build_model
 from dataset import KaggleDataset, Compose
 from helper import config, AverageMeter, iou_mean, save_ckpt, load_ckpt
 from loss import contour_criterion, focal_criterion,  mse_criterion, regularizer
-
+from valid import inference, unpack_data, get_iou
 
 def main(resume=True, n_epoch=None, learn_rate=None):
     model_name = config['param']['model'] # helper.py line26~32 with configparser (https://docs.python.org/3/library/configparser.html) Q:meaning of ['param']['model']
@@ -47,7 +48,8 @@ def main(resume=True, n_epoch=None, learn_rate=None):
 
     model = build_model(model_name) # model.py line654
     model = model.to(device)  # class UNet(nn.Module) to()function: https://pytorch.org/docs/stable/nn.html  Q: what does to() do
-
+    models = []
+    models.append(model)
     # define optimizer
     optimizer = torch.optim.Adam(  # https://pytorch.org/docs/stable/optim.html
         filter(lambda p: p.requires_grad, model.parameters()),  # Q: what is filter() and p
@@ -74,6 +76,15 @@ def main(resume=True, n_epoch=None, learn_rate=None):
             source_dataset, target_dataset = source_dataset.split()
         else:
             source_dataset, valid_dataset = source_dataset.split()
+    # add stage1 and stage2 testing set dataset
+    resize = not config['valid'].getboolean('pred_orig_size')
+    compose = Compose(augment=False, resize=resize)
+    s1test_dir = os.path.join('data', 'stage1test')
+    s2test_dir = os.path.join('data', 'stage2test')
+    if os.path.exists(s1test_dir):
+        datas1test = KaggleDataset(s1test_dir, 'csv_file_s', transform=compose)
+    if os.path.exists(s2test_dir):
+        datas2test = KaggleDataset(s2test_dir, 'csv_file_s', transform=compose)
     # decide whether to balance training set
     if balance_group:  # Q: what is the meaning
         weights, ratio = source_dataset.class_weight() # dataset.py line116
@@ -142,7 +153,7 @@ def main(resume=True, n_epoch=None, learn_rate=None):
                 batch_iterator = zip(loop_iterable(source_loader), loop_iterable(target_loader))
                 iou_s = train(batch_iterator, model, optimizer, epoch, writer, max(len(source_loader),len(target_loader)))
             else:
-                iou_s = train(source_loader, model, optimizer, epoch, writer, len(loader))  # line146
+                iou_s = train(source_loader, model, optimizer, epoch, writer, len(source_loader))  # line146
             if domain_adaptation:
                 if len(target_dataset) > 0 and epoch % n_cv_epoch == 0:
                     with torch.no_grad():  # https://pytorch.org/docs/stable/_modules/torch/autograd/grad_mode.html
@@ -151,6 +162,11 @@ def main(resume=True, n_epoch=None, learn_rate=None):
                 if len(valid_dataset) > 0 and epoch % n_cv_epoch == 0:
                     with torch.no_grad():
                         iou_cv = valid(valid_loader, model, epoch, writer, len(source_loader))  # line220
+                        if os.path.exists(s1test_dir):
+                            train_inference(datas1test, models, resize, compose, epoch, writer, tbprefix = 'Stage1')
+                        if os.path.exists(s2test_dir):
+                            train_inference(datas2test, models, resize, compose, epoch, writer, tbprefix = 'Stage2')
+                        
             save_ckpt(model, optimizer, epoch, iou_s, iou_cv)
         print('Training finished...')
 
@@ -163,6 +179,15 @@ def dump_graph(model, writer, n_batch, width):
     dummy_input = torch.rand(n_batch, 3, width, width, device=device)
     torch.onnx.export(model, dummy_input, "checkpoint/model.pb", verbose=False)
     writer.add_graph_onnx("checkpoint/model.pb")
+
+def train_inference(dataset, models, resize, compose, epoch ,writer, tbprefix):
+    iou_test = AverageMeter()
+    for data in tqdm(dataset):  # https://tqdm.github.io/docs/tqdm/
+        uid, y, y_c, y_m = inference(data, models, resize)
+        x, gt, gt_s, gt_c, gt_m = unpack_data(data, compose, resize)
+        iou = get_iou(y, y_c, y_m, gt)
+        iou_test.update(iou, 1)
+    writer.add_scalar('testing/' + tbprefix + '_instance_iou', iou_test.avg, epoch)
 
 def train(loader, model, optimizer, epoch, writer, n_step):
     batch_time = AverageMeter()  # helper.py line35
@@ -194,7 +219,7 @@ def train(loader, model, optimizer, epoch, writer, n_step):
         if domain_adaptation:
             data_s, data_t = next(loader)
         else:
-            data_s = loader[i]
+            data_s = next(iter(loader))
         # measure data loading time
         data_time.update(time.time() - end)
         # split sample data
