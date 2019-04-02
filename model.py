@@ -199,11 +199,11 @@ class CamUNet(nn.Module):
         self.cem = nn.Conv2d(16, 1, 1)
 
     def forward(self, x):
-        x, c1 = self.c1(x)
-        x, c2 = self.c2(x)
-        x, c3 = self.c3(x)
-        x, c4 = self.c4(x)
-        _, x = self.cu(x) # no maxpool for U bottom
+        x, c1, _ = self.c1(x)
+        x, c2, _ = self.c2(x)
+        x, c3, _ = self.c3(x)
+        x, c4, _ = self.c4(x)
+        _, x, _ = self.cu(x) # no maxpool for U bottom
         xs = self.u5s(x, c4)
         xs = self.u6s(xs, c3)
         xs = self.u7s(xs, c2)
