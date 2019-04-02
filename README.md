@@ -230,6 +230,23 @@ Just pick one option to prepare dataset
     - Further manually add synthesized internal data to `data/train` folder
         - Collect some prediction errors and synthesize data to relearn them.
 
+### Option F: Add Stage1/Stage2 testing data for validation.(solution is known)
+    .
+    ├── README.md
+    └── data
+        ├── test
+        │   ├── 0114f484a16c152baa2d82fdd43740880a762c93f436c8988ac461c5c9dbe7d5
+        │   └── ...
+        ├── train
+        │   ├── 00071198d059ba7f5914a526d124d28e6d010c92466da21d4a04cd5413362552
+        │   └── ...
+        ├── stage1test
+        │   ├── 0a849e0eb15faa8a6d7329c3dd66aabe9a294cccb52ed30a90c8ca99092ae732
+        │   └── ...
+        └── stage2test
+            ├── 2ad096cf3239478755b5397330cc68805e9860f54d210fb70107f67bd68a6ea7
+            └── ...
+            
 ## Hyper-parameter tunning
 
 * Create or modify ` config.ini ` file to overwrite preferences in config_default.ini
