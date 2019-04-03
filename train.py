@@ -29,18 +29,20 @@ def main(resume=True, n_epoch=None, learn_rate=None):
     n_batch = c.getint('n_batch')
     n_worker = c.getint('n_worker')
     n_cv_epoch = c.getint('n_cv_epoch')
-    if model_name == 'da_unet' or model_name == 'ynet':
+    if model_name == 'da_unet' or model_name == 'ynet' or model_name == 'camynet':
         domain_adaptation = True
     else:
         domain_adaptation = False
     if domain_adaptation:
         target_data = config[model_name]['target_data']
-    if model_name == 'ynet':
+    if model_name == 'ynet' or model_name == 'camynet':
         mode = config[model_name]['mode']
         if mode == 'pretrain':
             print('pretrain mode')
         elif mode == 'train':
             print('train mode')
+        elif mode == 'combine':
+            print('combined training mode')
     if n_epoch is None:
         n_epoch = c.getint('n_epoch')
     balance_group = c.getboolean('balance_group')
@@ -79,8 +81,8 @@ def main(resume=True, n_epoch=None, learn_rate=None):
     # add stage1 and stage2 testing set dataset
     resize = not config['valid'].getboolean('pred_orig_size')
     compose = Compose(augment=False, resize=resize)
-    s1test_dir = os.path.join('data', 'stage1test')
-    s2test_dir = os.path.join('data', 'stage2test')
+    s1test_dir = os.path.join('data', 'test')
+    s2test_dir = os.path.join('data', 'valid')
     if os.path.exists(s1test_dir):
         datas1test = KaggleDataset(s1test_dir, 'csv_file_s', transform=compose)
     if os.path.exists(s2test_dir):
@@ -157,7 +159,11 @@ def main(resume=True, n_epoch=None, learn_rate=None):
             if domain_adaptation:
                 if len(target_dataset) > 0 and epoch % n_cv_epoch == 0:
                     with torch.no_grad():  # https://pytorch.org/docs/stable/_modules/torch/autograd/grad_mode.html
-                        iou_cv = valid(target_loader, model, epoch, writer, len(source_loader)) # a little problem: may contains duplicated data
+                        iou_cv = valid(target_loader, model, epoch, writer, len(target_loader))
+                        if os.path.exists(s1test_dir):
+                            train_inference(datas1test, models, resize, compose, epoch, writer, tbprefix = 'Stage1')
+                        if os.path.exists(s2test_dir):
+                            train_inference(datas2test, models, resize, compose, epoch, writer, tbprefix = 'Stage2')
             else:
                 if len(valid_dataset) > 0 and epoch % n_cv_epoch == 0:
                     with torch.no_grad():
@@ -166,7 +172,7 @@ def main(resume=True, n_epoch=None, learn_rate=None):
                             train_inference(datas1test, models, resize, compose, epoch, writer, tbprefix = 'Stage1')
                         if os.path.exists(s2test_dir):
                             train_inference(datas2test, models, resize, compose, epoch, writer, tbprefix = 'Stage2')
-                        
+
             save_ckpt(model, optimizer, epoch, iou_s, iou_cv)
         print('Training finished...')
 
@@ -203,10 +209,10 @@ def train(loader, model, optimizer, epoch, writer, n_step):
     with_contour = config.getboolean(model_name, 'branch_contour')
     with_marker = config.getboolean(model_name, 'branch_marker')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if model_name == 'da_unet' or model_name == 'ynet':
+    if model_name == 'da_unet' or model_name == 'ynet' or model_name == 'camynet':
         domain_adaptation = True
         reg = config[model_name]['regularizer']
-        if model_name == 'ynet':
+        if model_name == 'ynet' or model_name == 'camynet':
             mode = config[model_name]['mode']
             lamb = config[model_name]['lamb'].split(',')
     else:
@@ -246,6 +252,13 @@ def train(loader, model, optimizer, epoch, writer, n_step):
                 outputs, rec_s, rec_t, feature_map_s, feature_map_t = model([inputs_s, inputs_t], mode)
             else:
                 outputs, rec_s, rec_t = model([inputs_s, inputs_t], mode)
+        elif model_name == 'camynet':
+            if mode == 'pretrain':
+                outputs, outputs_c, outputs_m, feature_map_s, feature_map_t = model([inputs_s, inputs_t], mode)
+            elif mode == 'combine':
+                outputs, outputs_c, outputs_m, rec_s, rec_t, feature_map_s, feature_map_t = model([inputs_s, inputs_t], mode)
+            else:
+                outputs, outputs_c, outputs_m, rec_s, rec_t = model([inputs_s, inputs_t], mode)
         else:
             outputs = model(inputs_s)
             if with_contour and with_marker:
@@ -327,7 +340,7 @@ def valid(loader, model, epoch, writer, n_step):
     with_contour = config.getboolean(model_name, 'branch_contour')
     with_marker = config.getboolean(model_name, 'branch_marker')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if model_name == 'da_unet' or model_name == 'ynet':
+    if model_name == 'da_unet' or model_name == 'ynet' or model_name == 'camynet':
         domain_adaptation = True
     else:
         domain_adaptation = False
