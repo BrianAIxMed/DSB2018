@@ -121,7 +121,7 @@ def inference(data, models, resize):
     ensemble_policy = config['valid']['ensemble']
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_name = config['param']['model']
-    if model_name == 'da_unet' or model_name == 'ynet':
+    if model_name == 'da_unet' or model_name == 'ynet' or model_name == 'camynet':
         domain_adaptation = True
     else:
         domain_adaptation = False
