@@ -12,11 +12,36 @@ from torch.utils.data import DataLoader
 from skimage.morphology import label, remove_small_objects
 from tqdm import tqdm
 from PIL import Image
+import sklearn.metrics as metrics
 # own code
 from dataset import KaggleDataset, Compose
 from helper import config, load_ckpt, prob_to_rles, partition_instances, iou_metric, clahe, filter_fiber
 
-def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False):
+def save_image(uid, input, name):
+    if type(input) is not np.ndarray:
+        input = input.cpu().numpy()
+    idxs = np.unique(input) # sorted, 1st is background (e.g. 0)
+
+    dir = os.path.join(os.path.join('data', 'visualize'), uid)
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+
+    for idx in idxs[1:]:
+        mask = (input == idx).astype(np.uint8)
+        while len(mask.shape)>2:
+            if mask.shape[0] == 1:
+                mask = np.squeeze(mask, axis=0)
+            else:
+                mask = np.ascontiguousarray(mask.transpose(1,2,0))
+                break
+        mask *= 255
+        if len(mask.shape)==2:
+            img = Image.fromarray(mask, mode='L')
+        else:
+            img = Image.fromarray(mask, mode='RGB')
+        img.save(os.path.join(dir, name + '.png'), 'PNG')
+
+def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False, save_output_steps=False, plot_roc=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # load one or more checkpoint
@@ -62,8 +87,19 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False):
     writer = csvfile = None
     for data in tqdm(dataset):  # https://tqdm.github.io/docs/tqdm/
         with torch.no_grad():
-            uid, y, y_c, y_m = inference(data, models, resize)
+            uid, y, y_c, y_m = inference(data, models, resize, save_output_steps)
             x, gt, gt_s, gt_c, gt_m = unpack_data(data, compose, resize)
+
+        if save_output_steps:
+            save_image(uid, y, 'y_after_inference')
+            save_image(uid, y_c, 'y_c_after_inference')
+            save_image(uid, y_m, 'y_m_after_inference')
+
+            save_image(uid, x, 'x_after_unpack')
+            save_image(uid, gt, 'gt_after_unpack')
+            save_image(uid, gt_s, 'gt_s_after_unpack')
+            save_image(uid, gt_c, 'gt_c_after_unpack')
+            save_image(uid, gt_m, 'gt_m_after_unpack')
 
         if tocsv:
             if writer is None:
@@ -78,15 +114,15 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False):
                 csvfile = open('iou.csv', 'w')
                 writer = csv.writer(csvfile)
                 writer.writerow(['ImageId', 'IoU'])
-            iou = get_iou(y, y_c, y_m, gt)
+            iou = get_iou(uid, y, y_c, y_m, gt, save_output_steps)
             writer.writerow([uid, iou])
             ious.append(iou)
         elif mask:
-            save_mask(uid, y, y_c, y_m)
+            save_mask(uid, y, y_c, y_m, save_output_steps)
         elif target == 'test':
-            show(uid, x, y, y_c, y_m, save)
+            show(uid, x, y, y_c, y_m, save, save_output_steps)
         else: # train or valid
-            show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save)
+            show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save, save_output_steps, plot_roc)
 
     # end of for-loop
     if csvfile is not None:
@@ -113,7 +149,7 @@ def unpack_data(data, compose, resize):
     gt_m = compose.to_numpy(gt_m, s)
     return x, gt, gt_s, gt_c, gt_m
 
-def inference(data, models, resize):
+def inference(data, models, resize, save_output_steps=False):
     threshold = config['param'].getfloat('threshold')
     threshold_edge = config['param'].getfloat('threshold_edge')
     threshold_mark = config['param'].getfloat('threshold_mark')
@@ -162,6 +198,12 @@ def inference(data, models, resize):
         txf_funcs = [lambda x: x]
 
     y_s = y_c = y_m = torch.FloatTensor().to(device)
+    
+    if save_output_steps:
+        save_image(uid, y_s, 'y_s_danno')
+        save_image(uid, y_c, 'y_c_danno')
+        save_image(uid, y_m, 'y_m_danno')
+    
     for model in models:
         model_name = type(model).__name__.lower()
         with_contour = config.getboolean(model_name, 'branch_contour')
@@ -185,6 +227,12 @@ def inference(data, models, resize):
                 s, c, m = s
             elif with_contour:
                 s, c = s
+
+            if save_output_steps:
+                save_image(uid, s, 's_model_out')
+                save_image(uid, c, 'c_model_out')
+                save_image(uid, m, 'm_model_out')
+
             # crop padding
             if not resize:
                 w, h = size
@@ -210,6 +258,12 @@ def inference(data, models, resize):
                     y_m = torch.cat([y_m, (m > threshold_mark).float()], 0)
             else:
                 raise NotImplementedError("Ensemble policy not implemented")
+
+            if save_output_steps:
+                save_image(uid, y_s, 'y_s_after_cat')
+                save_image(uid, y_c, 'y_c_after_cat')
+                save_image(uid, y_m, 'y_m_after_cat')
+
     return uid, convert(y_s), convert(y_c), convert(y_m)
 # end of predict()
 
@@ -296,7 +350,7 @@ def show_figure():
         pass
     plt.show()
 
-def show(uid, x, y, y_c, y_m, save=False):
+def show(uid, x, y, y_c, y_m, save=False, save_output_steps=False):
     threshold = config['param'].getfloat('threshold')
     threshold_edge = config['param'].getfloat('threshold_edge')
     threshold_mark = config['param'].getfloat('threshold_mark')
@@ -319,8 +373,13 @@ def show(uid, x, y, y_c, y_m, save=False):
     markers = np.zeros_like(x)
     if segmentation:
         y, markers = partition_instances(y, y_m, y_c)
+        if save_output_steps:
+            save_image(uid, y, 'y_post1')
+            save_image(uid, markers, 'm_post1')
     if remove_objects:
         y = remove_small_objects(y, min_size=min_object_size)
+        if save_output_steps:
+            save_image(uid, y, 'y_post2')
     if remove_fiber:
         y = filter_fiber(y)
     y, cmap = _make_overlay(y)
@@ -347,7 +406,7 @@ def show(uid, x, y, y_c, y_m, save=False):
     else:
         show_figure()
 
-def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False):
+def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save_output_steps=False, plot_roc=False):
     threshold = config['param'].getfloat('threshold')
     threshold_edge = config['param'].getfloat('threshold_edge')
     threshold_mark = config['param'].getfloat('threshold_mark')
@@ -370,8 +429,13 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False):
     ax1[0].imshow(x, aspect='auto')
     if segmentation :
         y, markers = partition_instances(y, y_m, y_c)
+        if save_output_steps:
+            save_image(uid, y, 'y_post1')
+            save_image(uid, markers, 'm_post1')
     if remove_objects:
         y = remove_small_objects(y, min_size=min_object_size)
+        if save_output_steps:
+            save_image(uid, y, 'y_post2')
     if remove_fiber:
         y = filter_fiber(y)
     _, count = label(y, return_num=True)
@@ -389,6 +453,7 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False):
         iou = iou_metric(y, gt, print_table)
     ax1[3].set_title('Overlay, IoU={:.3f}'.format(iou))
     ax1[3].imshow(gt_s, cmap='gray', aspect='auto')
+    y_not_nan = y
     y, cmap = _make_overlay(y)
     ax1[3].imshow(y, cmap=cmap, alpha=0.3, aspect='auto')
 
@@ -421,6 +486,20 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False):
         ax3[2].set_title('Marker Lbls, #={}'.format(count))
         ax3[2].imshow(gt_m, cmap='gray', aspect='auto')
 
+    if plot_roc:
+        # copied from https://stackoverflow.com/questions/25009284/how-to-plot-roc-curve-in-python
+        gt_1d = gt.flatten().tolist()
+        y_1d = y_not_nan.flatten().tolist()
+        for i in range(len(gt_1d)):
+            gt_1d[i] = 1 if gt_1d[i]>=1 else 0
+            y_1d[i] = 1 if y_1d[i]>=1 else 0
+        fpr, tpr, threshold = metrics.roc_curve(gt_1d, y_1d)
+        roc_auc = metrics.auc(fpr, tpr)
+        ax3[3].set_title('ROC Curve')
+        ax3[3].plot(fpr, tpr, 'b', label = 'AUC = %0.2f' % roc_auc)
+        ax3[3].legend(loc = 'lower right')
+        ax3[3].plot([0, 1], [0, 1],'r--')
+
     plt.tight_layout()
 
     if save:
@@ -433,7 +512,7 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False):
 def predict_save_folder():
     return os.path.join('data', 'predict')
 
-def save_mask(uid, y, y_c, y_m):
+def save_mask(uid, y, y_c, y_m, save_output_steps=False):
     threshold = config['param'].getfloat('threshold')
     segmentation = config['post'].getboolean('segmentation')
     remove_objects = config['post'].getboolean('remove_objects')
@@ -442,8 +521,12 @@ def save_mask(uid, y, y_c, y_m):
 
     if segmentation:
         y, _ = partition_instances(y, y_m, y_c)
+        if save_output_steps:
+            save_image(uid, y, 'y_post1')
     if remove_objects:
         y = remove_small_objects(y, min_size=min_object_size)
+        if save_output_steps:
+            save_image(uid, y, 'y_post2')
     if remove_fiber:
         y = filter_fiber(y)
     idxs = np.unique(y) # sorted, 1st is background (e.g. 0)
@@ -459,7 +542,7 @@ def save_mask(uid, y, y_c, y_m):
         img.save(os.path.join(dir, str(uuid.uuid4()) + '.png'), 'PNG')
 
 
-def get_iou(y, y_c, y_m, gt):
+def get_iou(uid, y, y_c, y_m, gt, save_output_steps=False):
     segmentation = config['post'].getboolean('segmentation')
     remove_objects = config['post'].getboolean('remove_objects')
     min_object_size = config['post'].getint('min_object_size')
@@ -468,8 +551,13 @@ def get_iou(y, y_c, y_m, gt):
 
     if segmentation:
         y, markers = partition_instances(y, y_m, y_c)  # helper.py line313
+        if save_output_steps:
+            save_image(uid, y, 'y_post1')
+            save_image(uid, markers, 'm_post1')
     if remove_objects:
         y = remove_small_objects(y, min_size=min_object_size)
+        if save_output_steps:
+            save_image(uid, y, 'y_post2')
     if remove_fiber:
         y = filter_fiber(y)
     if only_contour:
@@ -488,7 +576,7 @@ if __name__ == '__main__':
     parser.add_argument('--mask', action='store_true', help='Save prediction as PNG files per nuclei')
     parser.add_argument('--iou', action='store_true', help='Generate IoU CSV report')
     parser.add_argument('ckpt', nargs='*', help='filepath of checkpoint(s), otherwise lookup checkpoint/current.json')
-    parser.set_defaults(csv=False, save=False, mask=False, dataset='test', iou=True)
+    parser.set_defaults(csv=False, save=True, mask=False, dataset='valid', iou=False)
     args = parser.parse_args()
 
     if not args.csv and not args.iou:
@@ -506,4 +594,4 @@ if __name__ == '__main__':
             if not os.path.exists(dir):
                 os.makedirs(dir)
 
-    main(args.ckpt, args.csv, args.save, args.mask, args.dataset, args.iou)
+    main(args.ckpt, args.csv, args.save, args.mask, args.dataset, args.iou, save_output_steps=False, plot_roc=False)
