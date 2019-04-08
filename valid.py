@@ -418,7 +418,7 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save
     view_color_equalize = config['valid'].getboolean('view_color_equalize')
     print_table = config['valid'].getboolean('print_table')
 
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 4, sharey=True, figsize=(12, 8))
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 4, figsize=(12, 8))
     fig.suptitle(uid, y=1)
 
     y_s = y # to show pure semantic predict later
@@ -453,10 +453,11 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save
         iou = iou_metric(y, gt, print_table)
     ax1[3].set_title('Overlay, IoU={:.3f}'.format(iou))
     ax1[3].imshow(gt_s, cmap='gray', aspect='auto')
-    y_not_nan = y
+
     y, cmap = _make_overlay(y)
     ax1[3].imshow(y, cmap=cmap, alpha=0.3, aspect='auto')
 
+    y_not_nan = y_s
     y_s = y_s > threshold
     _, count = label(y_s, return_num=True)
     ax2[0].set_title('Semantic Predict, #={}'.format(count))
@@ -488,14 +489,16 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save
 
     if plot_roc:
         # copied from https://stackoverflow.com/questions/25009284/how-to-plot-roc-curve-in-python
-        gt_1d = gt.flatten().tolist()
-        y_1d = y_not_nan.flatten().tolist()
+        gt_1d = gt.flatten()
+        y_1d = y_not_nan.flatten()
         for i in range(len(gt_1d)):
             gt_1d[i] = 1 if gt_1d[i]>=1 else 0
-            y_1d[i] = 1 if y_1d[i]>=1 else 0
+            #y_1d[i] = 1 if y_1d[i]>=1 else 0
         fpr, tpr, threshold = metrics.roc_curve(gt_1d, y_1d)
         roc_auc = metrics.auc(fpr, tpr)
         ax3[3].set_title('ROC Curve')
+        ax3[3].set_xlim([0.0, 1.0])
+        ax3[3].set_ylim([0.0, 1.05])
         ax3[3].plot(fpr, tpr, 'b', label = 'AUC = %0.2f' % roc_auc)
         ax3[3].legend(loc = 'lower right')
         ax3[3].plot([0, 1], [0, 1],'r--')
@@ -594,4 +597,4 @@ if __name__ == '__main__':
             if not os.path.exists(dir):
                 os.makedirs(dir)
 
-    main(args.ckpt, args.csv, args.save, args.mask, args.dataset, args.iou, save_output_steps=False, plot_roc=False)
+    main(args.ckpt, args.csv, args.save, args.mask, args.dataset, args.iou, save_output_steps=False, plot_roc=True)
