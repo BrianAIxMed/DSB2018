@@ -74,11 +74,11 @@ class UNet(nn.Module):
         self.ce = nn.Conv2d(16, 1, 1)
 
     def forward(self, x):
-        x, c1 = self.c1(x)
-        x, c2 = self.c2(x)
-        x, c3 = self.c3(x)
-        x, c4 = self.c4(x)
-        _, x = self.cu(x) # no maxpool for U bottom
+        x, c1, _ = self.c1(x)
+        x, c2, _ = self.c2(x)
+        x, c3, _ = self.c3(x)
+        x, c4, _ = self.c4(x)
+        _, x, _ = self.cu(x) # no maxpool for U bottom
         x = self.u5(x, c4)
         x = self.u6(x, c3)
         x = self.u7(x, c2)
