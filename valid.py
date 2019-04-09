@@ -41,9 +41,11 @@ def save_image(uid, input, name):
             img = Image.fromarray(mask, mode='RGB')
         img.save(os.path.join(dir, name + '.png'), 'PNG')
 
-def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False, save_output_steps=False, plot_roc=False):
+def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False, save_output_steps=False, plot_roc=False, choose_threshold=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    if choose_threshold:
+        thresholds = []
     # load one or more checkpoint
     models = []
     for fn in ckpt or [None]:
@@ -122,7 +124,14 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False, 
         elif target == 'test':
             show(uid, x, y, y_c, y_m, save, save_output_steps)
         else: # train or valid
-            show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save, save_output_steps, plot_roc)
+            tmp = show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save, save_output_steps, plot_roc, choose_threshold)
+            if choose_threshold:
+                if writer is None:
+                    csvfile = open('threshold.csv', 'w')
+                    writer = csv.writer(csvfile)
+                    writer.writerow(['ImageId', 'BestThreshold'])
+                writer.writerow([uid, tmp])
+                thresholds.append(tmp)
 
     # end of for-loop
     if csvfile is not None:
@@ -130,6 +139,9 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False, 
     if toiou:
         print('\nIoU Metrics:\n mean: {0:.4f}\t std: {1:.4f}\t max: {2:.4f}\t min: {3:.4f}\t count: {4}\n'
             .format(np.mean(ious), np.std(ious), np.max(ious), np.min(ious), len(ious)))
+    if choose_threshold:
+        print('\nThresholds:\n mean: {0:.4f}\t std: {1:.4f}\t max: {2:.4f}\t min: {3:.4f}\t count: {4}\n'
+            .format(np.mean(thresholds), np.std(thresholds), np.max(thresholds), np.min(thresholds), len(thresholds)))
 # end of main()
 
 def unpack_data(data, compose, resize):
@@ -406,7 +418,7 @@ def show(uid, x, y, y_c, y_m, save=False, save_output_steps=False):
     else:
         show_figure()
 
-def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save_output_steps=False, plot_roc=False):
+def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save_output_steps=False, plot_roc=False, choose_threshold=False):
     threshold = config['param'].getfloat('threshold')
     threshold_edge = config['param'].getfloat('threshold_edge')
     threshold_mark = config['param'].getfloat('threshold_mark')
@@ -503,6 +515,15 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save
         ax3[3].legend(loc = 'lower right')
         ax3[3].plot([0, 1], [0, 1],'r--')
 
+        if choose_threshold:
+            min_ = 100
+            min_t = -1
+            for i in range(len(threshold)):
+                tmp = (1-tpr[i])*(1-tpr[i]) + fpr[i]*fpr[i]
+                if tmp < min_ :
+                    min_ = tmp
+                    min_t = threshold[i]
+
     plt.tight_layout()
 
     if save:
@@ -511,6 +532,11 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save
         plt.savefig(fp)
     else:
         show_figure()
+
+    if choose_threshold:
+        return min_t
+    else:
+        return None
 
 def predict_save_folder():
     return os.path.join('data', 'predict')
@@ -597,4 +623,4 @@ if __name__ == '__main__':
             if not os.path.exists(dir):
                 os.makedirs(dir)
 
-    main(args.ckpt, args.csv, args.save, args.mask, args.dataset, args.iou, save_output_steps=False, plot_roc=True)
+    main(args.ckpt, args.csv, args.save, args.mask, args.dataset, args.iou, save_output_steps=False, plot_roc=True, choose_threshold=True)
