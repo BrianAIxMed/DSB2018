@@ -15,7 +15,7 @@ from tqdm import tqdm
 from model import build_model
 from dataset import KaggleDataset, Compose
 from helper import config, AverageMeter, iou_mean, save_ckpt, load_ckpt
-from loss import contour_criterion, focal_criterion,  mse_criterion, regularizer
+from loss import contour_criterion, focal_criterion,  mse_criterion, regularizer, focal_pixel_criterion
 from valid import inference, unpack_data, get_iou
 
 def main(resume=True, n_epoch=None, learn_rate=None):
