@@ -110,7 +110,10 @@ Kaggle 2018 Data Science Bowl: find the nuclei in divergent images to advance me
 
 ## Setup development environment
 
-* Install Python 3.6 (conda recommanded)
+* Install Python 3.6.3 (conda recommanded)
+    ```
+    $ conda install python=3.6.3
+    ```
 * Install [PyTorch](http://pytorch.org/)
     ```
     $ conda install pytorch torchvision cuda91 -c pytorch
@@ -119,6 +122,25 @@ Kaggle 2018 Data Science Bowl: find the nuclei in divergent images to advance me
 * Install dependency python packages
     ```
     $ conda install --file requirements.txt
+    ```
+
+* Install tensorboardX
+    ```
+    $ pip install tensorboardX
+    ```
+
+* Downgrade torchvision
+    ```
+    $ conda install 'torchvision==0.2'
+    ```
+
+* The following error message may occur while running the code
+    ```
+    ValueError: zero-size array to reduction operation maximum which has no identity
+    ```
+     If this error occurs, downgrade scikit-image
+    ```
+    $ conda install 'scikit-image==0.13.1'
     ```
 
 ## Prepare data
