@@ -41,10 +41,13 @@ def save_image(uid, input, name):
             img = Image.fromarray(mask, mode='RGB')
         img.save(os.path.join(dir, name + '.png'), 'PNG')
 
-def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False, save_output_steps=False, plot_roc=False, choose_threshold=False):
+def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False, save_output_steps=False, plot_roc=False, choose_threshold=False, global_roc=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if choose_threshold:
+    if global_roc:
+        prec = None
+        counts = 0
+    elif choose_threshold:
         thresholds = []
     # load one or more checkpoint
     models = []
@@ -121,11 +124,18 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False, 
             ious.append(iou)
         elif mask:
             save_mask(uid, y, y_c, y_m, save_output_steps)
-        elif target == 'test':
+        elif target == 'testyyy':
             show(uid, x, y, y_c, y_m, save, save_output_steps)
         else: # train or valid
-            tmp = show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save, save_output_steps, plot_roc, choose_threshold)
-            if choose_threshold:
+            tmp = show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save, save_output_steps, plot_roc, choose_threshold, global_roc)
+            if global_roc:
+                prec_tmp, thresholds_tmp = tmp
+                if prec is None:
+                    prec = np.asarray(prec_tmp)
+                else:
+                    prec += prec_tmp
+                counts += 1
+            elif choose_threshold:
                 if writer is None:
                     csvfile = open('threshold.csv', 'w')
                     writer = csv.writer(csvfile)
@@ -139,7 +149,17 @@ def main(ckpt, tocsv=False, save=False, mask=False, target='test', toiou=False, 
     if toiou:
         print('\nIoU Metrics:\n mean: {0:.4f}\t std: {1:.4f}\t max: {2:.4f}\t min: {3:.4f}\t count: {4}\n'
             .format(np.mean(ious), np.std(ious), np.max(ious), np.min(ious), len(ious)))
-    if choose_threshold:
+    if global_roc:
+        prec = (prec / counts).tolist()
+        roc_auc = metrics.auc(thresholds_tmp, prec)
+        fig_roc = plt.figure()
+        fig_roc.suptitle('Threshold-IOU Curve')
+        plt.plot(thresholds_tmp, prec, 'b', label = 'AUC = %0.2f' % roc_auc)
+        plt.legend(loc = 'lower left')
+        plt.plot([1, 1], [0, 0],'r--')
+        fp = os.path.join('data', 'threshold_iou.png')
+        fig_roc.savefig(fp)
+    elif choose_threshold:
         print('\nThresholds:\n mean: {0:.4f}\t std: {1:.4f}\t max: {2:.4f}\t min: {3:.4f}\t count: {4}\n'
             .format(np.mean(thresholds), np.std(thresholds), np.max(thresholds), np.min(thresholds), len(thresholds)))
 # end of main()
@@ -418,7 +438,7 @@ def show(uid, x, y, y_c, y_m, save=False, save_output_steps=False):
     else:
         show_figure()
 
-def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save_output_steps=False, plot_roc=False, choose_threshold=False):
+def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save_output_steps=False, plot_roc=False, choose_threshold=False, global_roc=False):
     threshold = config['param'].getfloat('threshold')
     threshold_edge = config['param'].getfloat('threshold_edge')
     threshold_mark = config['param'].getfloat('threshold_mark')
@@ -460,9 +480,11 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save
     gt_c2, cmap = _make_overlay(gt_c)
     ax1[2].imshow(gt_c2, cmap=cmap, alpha=0.7, aspect='auto')
     if only_contour: # can not tell from instances in this case
-        iou = iou_metric(y, label(gt > 0), print_table)
+        iou = iou_metric(y, label(gt > 0), print_table, global_roc)
     else:
-        iou = iou_metric(y, gt, print_table)
+        iou = iou_metric(y, gt, print_table, global_roc)
+    if global_roc:
+        iou, prec, thresholds = iou
     ax1[3].set_title('Overlay, IoU={:.3f}'.format(iou))
     ax1[3].imshow(gt_s, cmap='gray', aspect='auto')
 
@@ -533,7 +555,9 @@ def show_groundtruth(uid, x, y, y_c, y_m, gt, gt_s, gt_c, gt_m, save=False, save
     else:
         show_figure()
 
-    if choose_threshold:
+    if global_roc:
+        return prec, thresholds
+    elif choose_threshold:
         return min_t
     else:
         return None
@@ -605,7 +629,7 @@ if __name__ == '__main__':
     parser.add_argument('--mask', action='store_true', help='Save prediction as PNG files per nuclei')
     parser.add_argument('--iou', action='store_true', help='Generate IoU CSV report')
     parser.add_argument('ckpt', nargs='*', help='filepath of checkpoint(s), otherwise lookup checkpoint/current.json')
-    parser.set_defaults(csv=False, save=True, mask=False, dataset='valid', iou=False)
+    parser.set_defaults(csv=False, save=True, mask=False, dataset='test', iou=False)
     args = parser.parse_args()
 
     if not args.csv and not args.iou:
@@ -623,4 +647,4 @@ if __name__ == '__main__':
             if not os.path.exists(dir):
                 os.makedirs(dir)
 
-    main(args.ckpt, args.csv, args.save, args.mask, args.dataset, args.iou, save_output_steps=False, plot_roc=True, choose_threshold=True)
+    main(args.ckpt, args.csv, args.save, args.mask, args.dataset, args.iou, save_output_steps=False, plot_roc=True, choose_threshold=False, global_roc=True)

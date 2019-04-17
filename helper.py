@@ -51,7 +51,7 @@ class AverageMeter():
 
 # copy from https://www.kaggle.com/aglotero/another-iou-metric
 # y_pred & labels are all 'labelled' numpy arrays
-def iou_metric(y_pred, labels, print_table=False):
+def iou_metric(y_pred, labels, print_table=False, global_roc=False):
     true_objects = len(np.unique(labels))
     pred_objects = len(np.unique(y_pred))
 
@@ -87,7 +87,11 @@ def iou_metric(y_pred, labels, print_table=False):
     prec = []
     if print_table:
         print("\nThresh\tTP\tFP\tFN\tPrec.")
+    if global_roc:
+        thresholds = []
     for t in np.arange(0.5, 1.0, 0.05):
+        if global_roc:
+            thresholds.append(t)
         tp, fp, fn = precision_at(t, iou)
         if (tp + fp + fn) > 0:
             p = tp / (tp + fp + fn)
@@ -99,7 +103,10 @@ def iou_metric(y_pred, labels, print_table=False):
 
     if print_table:
         print("AP\t-\t-\t-\t{:1.3f}".format(np.mean(prec)))
-    return np.mean(prec)
+    if global_roc:
+        return np.mean(prec), prec, thresholds
+    else:
+        return np.mean(prec)
 
 def iou_mean(y_pred_in, y_true_in):
     threshold=config['param'].getfloat('threshold')
